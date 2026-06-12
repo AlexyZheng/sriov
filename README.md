@@ -18,9 +18,7 @@ make
 
 ## Usage
 
-**Run as root** (required for sysfs SR-IOV writes). Run via `./run.sh` from the repo root —
-it wraps `build/b50-sriov-alloc` and automatically uses a custom Mesa build at
-`/opt/mesa-intel` if present (see "Arc Pro B70 (0xe223) on older Mesa" below):
+**Run as root** (required for sysfs SR-IOV writes).
 
 ```bash
 # Auto-detect Intel Arc Pro B50/B70 and create 3 VFs
