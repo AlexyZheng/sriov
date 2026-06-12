@@ -91,12 +91,38 @@ err:
     return ret;
 }
 
+int reset_sriov_vfs(const PciAddress& pci_addr) {
+    char sysfs_path[128];
+    snprintf(sysfs_path, sizeof(sysfs_path),
+             "/sys/bus/pci/devices/%04x:%02x:%02x.%d/sriov_numvfs",
+             pci_addr.domain, pci_addr.bus, pci_addr.device, pci_addr.function);
+
+    std::ofstream disable_file(sysfs_path);
+    if (!disable_file.is_open()) {
+        std::fprintf(stderr, "ERROR: Cannot open %s\n", sysfs_path);
+        return 1;
+    }
+
+    disable_file << 0;
+    disable_file.close();
+
+    if (disable_file.fail()) {
+        std::fprintf(stderr, "ERROR: Failed to write to %s\n", sysfs_path);
+        return 1;
+    }
+
+    std::printf("SUCCESS: Reset VFs to 0 on %02x:%02x.%d\n",
+                pci_addr.bus, pci_addr.device, pci_addr.function);
+    return 0;
+}
+
 void print_usage(const char* program) {
     std::printf("Usage: %s [options]\n", program);
     std::printf("Options:\n");
     std::printf("  --pci <domain:bus:device>  Target PCI device (default: auto-detect)\n");
     std::printf("  --sriov <num>              Enable SR-IOV with specified number of VFs\n");
     std::printf("  --memory <MB>              GPU memory to allocate in MB (default: 2048)\n");
+    std::printf("  --reset-vfs                Disable all VFs (sriov_numvfs=0) and exit\n");
     std::printf("  --help                     Show this help message\n");
 }
 
@@ -131,8 +157,8 @@ int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_de
             dev_file >> std::hex >> device_id;
 
             // Intel vendor ID: 0x8086
-            // Battlemage (BMG) device IDs: 0xe212 (Arc Pro B50), FIXME
-            if (vendor_id == 0x8086 && (device_id == 0xe212)) {
+            // Battlemage (BMG) device IDs: 0xe212 (Arc Pro B50), 0xe223 (Arc Pro B70)
+            if (vendor_id == 0x8086 && (device_id == 0xe212 || device_id == 0xe223)) {
 
                 unsigned int domain, bus, dev, func;
                 if (std::sscanf(entry->d_name, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4) {
@@ -172,6 +198,7 @@ int main(int argc, char* argv[]) {
     bool auto_detect = true;
     int num_vfs = 0;
     uint32_t memory_mb = 2048;
+    bool reset_vfs = false;
     
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
@@ -217,6 +244,11 @@ int main(int argc, char* argv[]) {
                     memory_mb = (uint32_t)atoi(argv[++i]);
                 }
                 break;
+            case 'r':  // --reset-vfs
+                if (strcmp(arg, "--reset-vfs") == 0) {
+                    reset_vfs = true;
+                }
+                break;
             case 'h':  // --help
                 if (strcmp(arg, "--help") == 0) {
                     print_usage(argv[0]);
@@ -233,11 +265,11 @@ int main(int argc, char* argv[]) {
         int result = detect_intel_b50_pci(target_pci, found_devices);
 
         if (result == 0) {
-            std::fprintf(stderr, "ERROR: Could not auto-detect Intel Arc Pro B50\n");
+            std::fprintf(stderr, "ERROR: Could not auto-detect Intel Arc Pro B50/B70\n");
             std::fprintf(stderr, "Use --pci <bus:device.func> to specify manually\n");
             return 1;
         } else if (result == 2) {
-            std::fprintf(stderr, "ERROR: Multiple Intel Arc Pro B50 devices found:\n");
+            std::fprintf(stderr, "ERROR: Multiple Intel Arc Pro B50/B70 devices found:\n");
             for (const auto& addr : found_devices) {
                 std::fprintf(stderr, "  - %04x:%02x:%02x.%d\n", addr.domain, addr.bus, addr.device, addr.function);
             }
@@ -247,7 +279,7 @@ int main(int argc, char* argv[]) {
             target_bus = target_pci.bus;
             target_device = target_pci.device;
             target_function = target_pci.function;
-            std::printf("Auto-detected Intel Arc Pro B50 at PCI %04x:%02x:%02x.%d\n",
+            std::printf("Auto-detected Intel Arc Pro B50/B70 at PCI %04x:%02x:%02x.%d\n",
                         target_pci.domain, target_bus, target_device, target_function);
         }
     } else {
@@ -256,6 +288,10 @@ int main(int argc, char* argv[]) {
         target_pci.device = target_device;
         target_pci.function = 0;  // Function 0 is the main device
         std::printf("Target PCI device: %04x:%02x:%02x.%d\n", target_domain, target_bus, target_device, 0);
+    }
+
+    if (reset_vfs) {
+        return reset_sriov_vfs(target_pci);
     }
 
     // Allocate GPU memory on first Intel GPU
@@ -290,25 +326,25 @@ int main(int argc, char* argv[]) {
         goto err_destroy_instance;
     }
 
-    // Select Intel Arc Pro B50 (device ID 0xe212)
+    // Select Intel Arc Pro B50/B70 (device IDs 0xe212 / 0xe223)
     std::printf("\nAvailable Vulkan devices:\n");
     for (const auto& dev : physical_devices) {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(dev, &props);
         std::printf("  - %s (vendor 0x%04x, device 0x%04x)\n", props.deviceName, props.vendorID, props.deviceID);
 
-        if (props.vendorID == 0x8086 && props.deviceID == 0xe212 && physical_device == VK_NULL_HANDLE) {
+        if (props.vendorID == 0x8086 && (props.deviceID == 0xe212 || props.deviceID == 0xe223) && physical_device == VK_NULL_HANDLE) {
             physical_device = dev;
-            std::printf("    ^-- SELECTED (Arc Pro B50)\n");
+            std::printf("    ^-- SELECTED (%s)\n", props.deviceID == 0xe212 ? "Arc Pro B50" : "Arc Pro B70");
         }
     }
 
     if (physical_device == VK_NULL_HANDLE) {
-        std::fprintf(stderr, "\nERROR: No Intel Arc Pro B50 (device 0xe212) found\n");
+        std::fprintf(stderr, "\nERROR: No Intel Arc Pro B50/B70 (device 0xe212/0xe223) found\n");
         goto err_destroy_instance;
     }
 
-    std::printf("\nSelected Intel Arc Pro B50 for memory allocation\n");
+    std::printf("\nSelected Intel Arc Pro GPU for memory allocation\n");
 
     // Logical device
     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
