@@ -34,6 +34,8 @@ sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
 - `--sriov <num>` — Create `<num>` SR-IOV VFs after allocating PF memory
 - `--memory <MB>` — GPU memory (VRAM) to reserve for the PF before creating VFs (default: 2048)
 - `--reset-vfs` — Disable all VFs (`sriov_numvfs=0`) without allocating any GPU memory. Use this before re-running with different `--memory`/`--sriov` values
+- `--persist` — After performing the requested allocation/VF setup, install a `systemd` service that replays the same command on every boot (see [Persistence across reboots](#persistence-across-reboots))
+- `--undo-persist` — Remove the boot-persistence service and exit
 - `--help` — Show usage and exit
 
 ### Examples
@@ -53,6 +55,12 @@ sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
 
 # Disable all existing VFs (e.g. before re-running with different --memory/--sriov)
 sudo ./b50-sriov-alloc --reset-vfs
+
+# Create 3 VFs now AND re-apply on every boot
+sudo ./b50-sriov-alloc --sriov 3 --persist
+
+# Stop re-applying on boot
+sudo ./b50-sriov-alloc --undo-persist
 
 # On systems where the system Mesa is too old for this GPU's PCI ID (e.g. Arc
 # Pro B70 / 0xe223 on Proxmox VE 9.2's Mesa 25.0.7), use run.sh instead - it
@@ -93,6 +101,9 @@ fails.
 Solution: build Mesa 26.x from source into an isolated `/opt/mesa-intel` prefix (system Mesa 
 is left untouched). `./run.sh` automatically uses `/opt/mesa-intel`'s ICD if present.
 
+If the `--persist` flag is used to install the service on boot, the environment variable
+will be carried over to the persistence service (so `./run.sh` is not required).
+
 ```bash
 # Build dependencies
 sudo apt install -y git build-essential meson ninja-build pkg-config python3-mako \
@@ -115,6 +126,37 @@ meson setup build --prefix=/opt/mesa-intel \
 ninja -C build
 sudo ninja -C build install
 ```
+
+## Persistence across reboots
+
+The PF memory reservation is transient (held only while the process runs) and
+SR-IOV VFs are reset to `0` on every reboot, so the PF/VF configuration does not
+survive a restart on its own. `--persist` solves this by installing a `systemd`
+oneshot service (`/etc/systemd/system/b50-sriov-alloc.service`, `WantedBy=multi-user.target`)
+that replays the exact command you ran — minus `--persist` — on every boot.
+
+```bash
+# Apply now and on every boot
+sudo ./b50-sriov-alloc --sriov 3 --persist
+```
+
+Because the service runs the binary on every boot, it should live in a stable
+location. If the binary is not already under `/opt` or `/usr`, `--persist`
+prompts to copy it to `/opt/b50-sriov-alloc/b50-sriov-alloc` and points the
+service at that copy. If you used `run.sh` for a custom Mesa build, the
+`VK_ICD_FILENAMES` value is captured into the service so the B70-on-older-Mesa
+case keeps working at boot (where `run.sh`'s environment is not present).
+
+Inspect or remove persistence:
+
+```bash
+systemctl status b50-sriov-alloc.service     # check it
+journalctl -u b50-sriov-alloc.service        # see boot-time output
+sudo ./b50-sriov-alloc --undo-persist        # disable + remove the service
+```
+
+`--undo-persist` disables and deletes the service unit; the installed binary
+under `/opt/b50-sriov-alloc/` is left in place (remove it manually if desired).
 
 ## Notes
 

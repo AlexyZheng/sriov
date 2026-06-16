@@ -1,13 +1,22 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
+#include <cerrno>
 #include <atomic>
+#include <string>
 #include <vector>
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <climits>
+#include <unistd.h>
 #include <dirent.h>
 #include <vulkan/vulkan.hpp>
+
+#define PERSIST_UNIT        "b50-sriov-alloc.service"
+#define PERSIST_UNIT_PATH   "/etc/systemd/system/" PERSIST_UNIT
+#define PERSIST_INSTALL_DIR "/opt/b50-sriov-alloc"
+#define PERSIST_INSTALL_BIN PERSIST_INSTALL_DIR "/b50-sriov-alloc"
 
 struct PciAddress {
     uint16_t domain;
@@ -116,6 +125,110 @@ int reset_sriov_vfs(const PciAddress& pci_addr) {
     return 0;
 }
 
+// Install a systemd oneshot service that re-runs this same command at every
+// boot, so the PF memory reservation + VF setup persists across reboots. The
+// original arguments are replayed verbatim (minus --persist).
+int install_persist(int argc, char* argv[]) {
+    char exe_path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len < 0) {
+        std::fprintf(stderr, "ERROR: Cannot resolve executable path: %s\n", strerror(errno));
+        return 1;
+    }
+    exe_path[len] = '\0';
+
+    // A binary invoked on every boot should live somewhere stable. If it is not
+    // already under a permanent prefix, offer to install it into /opt and point
+    // the service at that copy instead of an ad-hoc build/scratch path.
+    std::string exec_path = exe_path;
+    bool permanent = strncmp(exe_path, "/opt/", 5) == 0 || strncmp(exe_path, "/usr/", 5) == 0;
+    if (!permanent) {
+        std::printf("The binary at %s is not in a permanent location.\n", exe_path);
+        std::printf("Install it to %s for boot persistence? [y/N]: ", PERSIST_INSTALL_BIN);
+        std::fflush(stdout);
+
+        char answer[16] = {0};
+        if (!std::fgets(answer, sizeof(answer), stdin) || (answer[0] != 'y' && answer[0] != 'Y')) {
+            std::fprintf(stderr, "Aborted: persistence not enabled.\n");
+            return 1;
+        }
+
+        char cmd[PATH_MAX + 128];
+        snprintf(cmd, sizeof(cmd),
+                 "mkdir -p %s && cp -f '%s' '%s' && chmod 755 '%s'",
+                 PERSIST_INSTALL_DIR, exe_path, PERSIST_INSTALL_BIN, PERSIST_INSTALL_BIN);
+        if (std::system(cmd) != 0) {
+            std::fprintf(stderr, "ERROR: Failed to install binary to %s\n", PERSIST_INSTALL_BIN);
+            return 1;
+        }
+        std::printf("Installed binary to %s\n", PERSIST_INSTALL_BIN);
+        exec_path = PERSIST_INSTALL_BIN;
+    }
+
+    // Reconstruct the invocation, dropping --persist itself.
+    std::string exec_args;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--persist") == 0) continue;
+        exec_args += ' ';
+        exec_args += argv[i];
+    }
+
+    std::ofstream unit(PERSIST_UNIT_PATH);
+    if (!unit.is_open()) {
+        std::fprintf(stderr, "ERROR: Cannot write %s (run as root)\n", PERSIST_UNIT_PATH);
+        return 1;
+    }
+
+    unit << "[Unit]\n"
+         << "Description=Intel Arc Pro B50/B70 SR-IOV VF allocation\n"
+         << "\n"
+         << "[Service]\n"
+         << "Type=oneshot\n"
+         << "RemainAfterExit=yes\n";
+
+    // Preserve the custom Mesa ICD (set by run.sh) so the B70-on-old-Mesa case
+    // keeps working at boot, where run.sh's environment is not present.
+    const char* icd = std::getenv("VK_ICD_FILENAMES");
+    if (icd && icd[0]) {
+        unit << "Environment=VK_ICD_FILENAMES=" << icd << "\n";
+    }
+
+    unit << "ExecStart=" << exec_path << exec_args << "\n"
+         << "\n"
+         << "[Install]\n"
+         << "WantedBy=multi-user.target\n";
+    unit.close();
+
+    if (unit.fail()) {
+        std::fprintf(stderr, "ERROR: Failed to write %s\n", PERSIST_UNIT_PATH);
+        return 1;
+    }
+
+    std::system("systemctl daemon-reload");
+    if (std::system("systemctl enable " PERSIST_UNIT) != 0) {
+        std::fprintf(stderr, "ERROR: 'systemctl enable %s' failed\n", PERSIST_UNIT);
+        return 1;
+    }
+
+    std::printf("SUCCESS: Persistence enabled (%s)\n", PERSIST_UNIT_PATH);
+    return 0;
+}
+
+int undo_persist() {
+    // Ignore failure here: the unit may already be disabled or absent.
+    std::system("systemctl disable " PERSIST_UNIT " 2>/dev/null");
+
+    if (unlink(PERSIST_UNIT_PATH) != 0 && errno != ENOENT) {
+        std::fprintf(stderr, "ERROR: Cannot remove %s: %s\n", PERSIST_UNIT_PATH, strerror(errno));
+        return 1;
+    }
+
+    std::system("systemctl daemon-reload");
+    std::printf("SUCCESS: Persistence removed (%s)\n", PERSIST_UNIT_PATH);
+    std::printf("Note: the binary at %s (if installed) was left in place.\n", PERSIST_INSTALL_BIN);
+    return 0;
+}
+
 void print_usage(const char* program) {
     std::printf("Usage: %s [options]\n", program);
     std::printf("Options:\n");
@@ -123,6 +236,9 @@ void print_usage(const char* program) {
     std::printf("  --sriov <num>              Enable SR-IOV with specified number of VFs\n");
     std::printf("  --memory <MB>              GPU memory to allocate in MB (default: 2048)\n");
     std::printf("  --reset-vfs                Disable all VFs (sriov_numvfs=0) and exit\n");
+    std::printf("  --persist                  After running, install a systemd service that\n");
+    std::printf("                             replays this command on every boot\n");
+    std::printf("  --undo-persist             Remove the boot-persistence service and exit\n");
     std::printf("  --help                     Show this help message\n");
 }
 
@@ -199,7 +315,9 @@ int main(int argc, char* argv[]) {
     int num_vfs = 0;
     uint32_t memory_mb = 2048;
     bool reset_vfs = false;
-    
+    bool persist = false;
+    bool undo = false;
+
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -228,10 +346,17 @@ int main(int argc, char* argv[]) {
         
         // Quick first-character check before strcmp
         switch (arg[2]) {
-            case 'p':  // --pci
+            case 'p':  // --pci / --persist
                 if (strcmp(arg, "--pci") == 0 && i + 1 < argc) {
                     sscanf(argv[++i], "%hx:%hhx:%hhx", &target_domain, &target_bus, &target_device);
                     auto_detect = false;
+                } else if (strcmp(arg, "--persist") == 0) {
+                    persist = true;
+                }
+                break;
+            case 'u':  // --undo-persist
+                if (strcmp(arg, "--undo-persist") == 0) {
+                    undo = true;
                 }
                 break;
             case 's':  // --sriov
@@ -256,6 +381,11 @@ int main(int argc, char* argv[]) {
                 }
                 break;
         }
+    }
+
+    // Removing persistence needs no device; handle it before detection.
+    if (undo) {
+        return undo_persist();
     }
 
     // Auto-detect Intel Arc Pro B50 if not specified
@@ -418,6 +548,13 @@ int main(int argc, char* argv[]) {
     // Setup SR-IOV if requested
     if (num_vfs > 0) {
         if (setup_sriov_vfs(target_pci, num_vfs) != 0) {
+            goto err_sriov;
+        }
+    }
+
+    // Persist this configuration across reboots, now that it succeeded.
+    if (persist) {
+        if (install_persist(argc, argv) != 0) {
             goto err_sriov;
         }
     }
