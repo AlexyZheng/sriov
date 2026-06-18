@@ -92,7 +92,9 @@ Total: 32.00 GB
 ```
 
 ## Arc Pro B70 (0xe223) on older Mesa (e.g. Proxmox VE 9.2)
+INSTALL DEBIAN BACKPORTS MESA ( Proxmox VE 9.2 - Trixie backports)
 
+~~
 The B70 (`0xe223`) was added to Mesa's `anv` Vulkan driver in Mesa 25.1. Proxmox VE 9.2
 (Debian 13 "trixie") ships Mesa 25.0.7, so the system Vulkan ICD prints `MESA: warning:
 Driver does not support the 0xe223 PCI ID`, falls back to `llvmpipe`, and device selection
@@ -126,6 +128,7 @@ meson setup build --prefix=/opt/mesa-intel \
 ninja -C build
 sudo ninja -C build install
 ```
+~~
 
 ## Persistence across reboots
 
