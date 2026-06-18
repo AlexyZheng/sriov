@@ -22,10 +22,10 @@ make
 
 ```bash
 # Auto-detect Intel Arc Pro B50/B70 and create 3 VFs
-sudo ./b50-sriov-alloc --sriov 3
+sudo ./sriov --sriov 3
 
 # Specify PCI address manually (format: domain:bus:device, function=0 is forced)
-sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
+sudo ./sriov --pci 0000:0d:00 --sriov 3
 ```
 
 ### Options
@@ -42,25 +42,25 @@ sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
 
 ```bash
 # Auto-detect, create 3 VFs, allocate 2GB
-sudo ./b50-sriov-alloc --sriov 3
+sudo ./sriov --sriov 3
 
 # Allocate 512 MB, create 3 VFs
-sudo ./b50-sriov-alloc --memory 512 --sriov 3
+sudo ./sriov --memory 512 --sriov 3
 
 # Allocate 4GB, create 6 VFs
-sudo ./b50-sriov-alloc --memory 4096 --sriov 6
+sudo ./sriov --memory 4096 --sriov 6
 
 # Multi-GPU: specify device explicitly (domain:bus:device)
-sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
+sudo ./sriov --pci 0000:0d:00 --sriov 3
 
 # Disable all existing VFs (e.g. before re-running with different --memory/--sriov)
-sudo ./b50-sriov-alloc --reset-vfs
+sudo ./sriov --reset-vfs
 
 # Create 3 VFs now AND re-apply on every boot
-sudo ./b50-sriov-alloc --sriov 3 --persist
+sudo ./sriov --sriov 3 --persist
 
 # Stop re-applying on boot
-sudo ./b50-sriov-alloc --undo-persist
+sudo ./sriov --undo-persist
 
 # On systems where the system Mesa is too old for this GPU's PCI ID (e.g. Arc
 # Pro B70 / 0xe223 on Proxmox VE 9.2's Mesa 25.0.7), use run.sh instead - it
@@ -132,17 +132,17 @@ sudo ninja -C build install
 The PF memory reservation is transient (held only while the process runs) and
 SR-IOV VFs are reset to `0` on every reboot, so the PF/VF configuration does not
 survive a restart on its own. `--persist` solves this by installing a `systemd`
-oneshot service (`/etc/systemd/system/b50-sriov-alloc.service`, `WantedBy=multi-user.target`)
+oneshot service (`/etc/systemd/system/sriov.service`, `WantedBy=multi-user.target`)
 that replays the exact command you ran — minus `--persist` — on every boot.
 
 ```bash
 # Apply now and on every boot
-sudo ./b50-sriov-alloc --sriov 3 --persist
+sudo ./sriov --sriov 3 --persist
 ```
 
 Because the service runs the binary on every boot, it should live in a stable
 location. If the binary is not already under `/opt` or `/usr`, `--persist`
-prompts to copy it to `/opt/b50-sriov-alloc/b50-sriov-alloc` and points the
+prompts to copy it to `/opt/sriov/sriov` and points the
 service at that copy. If you used `run.sh` for a custom Mesa build, the
 `VK_ICD_FILENAMES` value is captured into the service so the B70-on-older-Mesa
 case keeps working at boot (where `run.sh`'s environment is not present).
@@ -150,13 +150,13 @@ case keeps working at boot (where `run.sh`'s environment is not present).
 Inspect or remove persistence:
 
 ```bash
-systemctl status b50-sriov-alloc.service     # check it
-journalctl -u b50-sriov-alloc.service        # see boot-time output
-sudo ./b50-sriov-alloc --undo-persist        # disable + remove the service
+systemctl status sriov.service     # check it
+journalctl -u sriov.service        # see boot-time output
+sudo ./sriov --undo-persist        # disable + remove the service
 ```
 
 `--undo-persist` disables and deletes the service unit; the installed binary
-under `/opt/b50-sriov-alloc/` is left in place (remove it manually if desired).
+under `/opt/sriov/` is left in place (remove it manually if desired).
 
 ## Notes
 
