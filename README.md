@@ -1,4 +1,4 @@
-# sriov
+# sriov (renamed stuff)
 
 Vulkan application for Intel Arc Pro B50/B70 (Battlemage) SR-IOV VF provisioning. By Default it allocates 2GB GPU memory before creating VFs to ensure host has usable VRAM.
 
