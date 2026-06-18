@@ -13,10 +13,10 @@
 #include <dirent.h>
 #include <vulkan/vulkan.hpp>
 
-#define PERSIST_UNIT        "b50-sriov-alloc.service"
+#define PERSIST_UNIT        "sriov.service"
 #define PERSIST_UNIT_PATH   "/etc/systemd/system/" PERSIST_UNIT
-#define PERSIST_INSTALL_DIR "/opt/b50-sriov-alloc"
-#define PERSIST_INSTALL_BIN PERSIST_INSTALL_DIR "/b50-sriov-alloc"
+#define PERSIST_INSTALL_DIR "/opt/sriov"
+#define PERSIST_INSTALL_BIN PERSIST_INSTALL_DIR "/sriov"
 
 struct PciAddress {
     uint16_t domain;
@@ -426,7 +426,7 @@ int main(int argc, char* argv[]) {
 
     // Allocate GPU memory on first Intel GPU
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.pApplicationName = "b50-sriov-alloc";
+    app_info.pApplicationName = "sriov";
     app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.pEngineName = "NoEngine";
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
